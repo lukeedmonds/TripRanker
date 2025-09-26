@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TripRanker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              primary: {
+                DEFAULT: '#2563eb',
+                light: '#3b82f6'
+              }
+            }
+          }
+        }
+      }
+    </script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  </head>
+  <body class="bg-gradient-to-b from-slate-100 via-white to-slate-100 min-h-screen">
+    <div id="app" class="max-w-6xl mx-auto py-12 px-4">
+      <header class="mb-8 text-center">
+        <h1 class="text-4xl font-bold text-slate-900">TripRanker</h1>
+        <p class="text-slate-600 mt-2">
+          Drag and drop the trips into your order of preference, remove the ones you did not attend,
+          and compare your ranking with the group's overall results after you save.
+        </p>
+      </header>
+
+      <main :class="hasSaved ? 'grid gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]' : 'space-y-8'">
+        <section class="bg-white/70 backdrop-blur-sm shadow-xl rounded-3xl p-8 border border-white/60">
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="text-2xl font-semibold text-slate-900">Your ranking</h2>
+            <button
+              class="text-sm text-primary hover:text-primary-light underline"
+              type="button"
+              @click="resetRanking"
+              v-if="trips.length"
+            >
+              Reset order
+            </button>
+          </div>
+
+          <p v-if="loading" class="text-slate-500">Loading trips...</p>
+          <p v-else-if="!trips.length" class="text-slate-500">No trips available.</p>
+
+          <ul
+            class="space-y-5"
+            v-if="trips.length"
+            @dragover.prevent="onDragOver"
+            @drop="onDrop"
+          >
+            <li
+              v-for="(trip, index) in trips"
+              :key="trip"
+              class="relative h-56 rounded-3xl overflow-hidden shadow-lg border border-white/40 cursor-grab active:cursor-grabbing"
+              draggable="true"
+              @dragstart="onDragStart(index)"
+              @dragenter.prevent="onDragEnter(index)"
+              @dragleave.prevent
+            >
+              <div
+                class="absolute inset-0 bg-cover bg-center"
+                :style="backgroundStyles(trip)"
+              ></div>
+              <div class="absolute inset-0 bg-gradient-to-br from-slate-900/70 via-slate-900/40 to-slate-900/60"></div>
+
+              <span
+                class="absolute top-5 right-5 w-14 h-14 rounded-full bg-white/90 text-slate-900 font-bold text-xl flex items-center justify-center shadow-lg"
+              >
+                {{ index + 1 }}
+              </span>
+
+              <div class="relative flex flex-col h-full justify-between p-6">
+                <h3 class="text-white text-2xl font-bold drop-shadow-lg">{{ trip }}</h3>
+                <div class="flex items-center justify-between">
+                  <span class="text-white/80 text-sm">Drag to reorder</span>
+                  <button
+                    class="px-4 py-2 text-sm font-semibold bg-white/90 text-slate-900 rounded-full shadow hover:bg-white"
+                    type="button"
+                    @click.stop="removeTrip(index)"
+                  >
+                    Remove
+                  </button>
+                </div>
+              </div>
+            </li>
+          </ul>
+
+          <div class="mt-6 flex flex-col sm:flex-row sm:items-center gap-3">
+            <button
+              class="bg-primary text-white px-6 py-3 rounded-full text-sm font-semibold shadow-lg hover:bg-primary-light disabled:opacity-40 disabled:cursor-not-allowed"
+              type="button"
+              @click="submitRanking"
+              :disabled="!trips.length || saving"
+            >
+              {{ saving ? 'Saving...' : 'Save ranking' }}
+            </button>
+            <p class="text-sm text-slate-500" v-if="saveMessage">{{ saveMessage }}</p>
+          </div>
+        </section>
+
+        <section
+          v-if="hasSaved"
+          class="bg-white/70 backdrop-blur-sm shadow-xl rounded-3xl p-8 border border-white/60"
+        >
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="text-2xl font-semibold text-slate-900">Group ranking</h2>
+            <button
+              class="text-sm text-primary hover:text-primary-light underline"
+              type="button"
+              @click="loadAggregate"
+            >
+              Refresh
+            </button>
+          </div>
+
+          <div v-if="aggregateLoading" class="text-slate-500">Loading results...</div>
+          <div v-else class="space-y-6">
+            <div>
+              <p class="text-slate-500" v-if="!aggregate.totalOrders">
+                No group rankings have been saved yet.
+              </p>
+              <p class="text-slate-600" v-else>
+                Based on <span class="font-semibold text-slate-700">{{ aggregate.totalOrders }}</span> saved ranking{{ aggregate.totalOrders === 1 ? '' : 's' }}.
+              </p>
+            </div>
+
+            <div v-if="aggregate.aggregate.length" class="space-y-6">
+              <div class="overflow-hidden rounded-2xl border border-slate-200">
+                <table class="min-w-full text-left">
+                  <thead class="bg-slate-100/70 text-slate-600 text-xs uppercase tracking-wide">
+                    <tr>
+                      <th class="py-3 px-4">Position</th>
+                      <th class="py-3 px-4">Trip</th>
+                      <th class="py-3 px-4 text-right">Score</th>
+                      <th class="py-3 px-4 text-right"># of lists</th>
+                    </tr>
+                  </thead>
+                  <tbody class="bg-white/80">
+                    <tr
+                      v-for="(item, index) in aggregate.aggregate"
+                      :key="item.trip"
+                      class="border-t border-slate-100"
+                    >
+                      <td class="py-3 px-4 font-semibold text-slate-700">{{ index + 1 }}</td>
+                      <td class="py-3 px-4 text-slate-900 font-medium">{{ item.trip }}</td>
+                      <td class="py-3 px-4 text-right text-slate-700">{{ item.score }}</td>
+                      <td class="py-3 px-4 text-right text-slate-700">{{ item.appearances }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div class="space-y-3">
+                <h3 class="text-xl font-semibold text-slate-900">How your list compares</h3>
+                <p class="text-sm text-slate-600">
+                  Comparison uses the ranking you saved most recently.
+                </p>
+                <div class="overflow-hidden rounded-2xl border border-slate-200">
+                  <table class="min-w-full text-left">
+                    <thead class="bg-slate-100/70 text-slate-600 text-xs uppercase tracking-wide">
+                      <tr>
+                        <th class="py-3 px-4">Trip</th>
+                        <th class="py-3 px-4 text-right">Your rank</th>
+                        <th class="py-3 px-4 text-right">Group rank</th>
+                        <th class="py-3 px-4 text-right">Difference</th>
+                      </tr>
+                    </thead>
+                    <tbody class="bg-white/80">
+                      <tr
+                        v-for="row in comparisonRows"
+                        :key="row.trip"
+                        class="border-t border-slate-100"
+                      >
+                        <td class="py-3 px-4 text-slate-900 font-medium">{{ row.trip }}</td>
+                        <td class="py-3 px-4 text-right text-slate-700">{{ row.yourRank }}</td>
+                        <td class="py-3 px-4 text-right text-slate-700">{{ row.groupRankLabel }}</td>
+                        <td class="py-3 px-4 text-right text-slate-700">{{ row.differenceLabel }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script>
+      const { createApp, ref, onMounted, computed } = Vue;
+
+      createApp({
+        setup() {
+          const loading = ref(false);
+          const aggregateLoading = ref(false);
+          const trips = ref([]);
+          const originalTrips = ref([]);
+          const dragIndex = ref(null);
+          const saveMessage = ref('');
+          const saving = ref(false);
+          const aggregate = ref({ totalOrders: 0, aggregate: [] });
+          const hasSaved = ref(false);
+          const savedRanking = ref([]);
+
+          const apiBase = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+            ? 'http://localhost:3001'
+            : '';
+
+          const fetchTrips = async () => {
+            loading.value = true;
+            try {
+              const response = await fetch(`${apiBase}/api/trips`);
+              const data = await response.json();
+              trips.value = [...data.trips];
+              originalTrips.value = [...data.trips];
+            } catch (error) {
+              console.error('Failed to load trips', error);
+            } finally {
+              loading.value = false;
+            }
+          };
+
+          const loadAggregate = async () => {
+            aggregateLoading.value = true;
+            try {
+              const response = await fetch(`${apiBase}/api/aggregate`);
+              if (!response.ok) throw new Error('Failed to fetch aggregate');
+              aggregate.value = await response.json();
+            } catch (error) {
+              console.error('Failed to load aggregate', error);
+            } finally {
+              aggregateLoading.value = false;
+            }
+          };
+
+          const backgroundStyles = (trip) => ({
+            backgroundImage: `url('https://source.unsplash.com/1200x800/?${encodeURIComponent(trip)}%2Ctravel')`
+          });
+
+          const onDragStart = (index) => {
+            dragIndex.value = index;
+          };
+
+          const onDragEnter = (index) => {
+            if (dragIndex.value === null || dragIndex.value === index) return;
+            const updated = [...trips.value];
+            const [moved] = updated.splice(dragIndex.value, 1);
+            updated.splice(index, 0, moved);
+            trips.value = updated;
+            dragIndex.value = index;
+          };
+
+          const onDragOver = () => {};
+          const onDrop = () => {
+            dragIndex.value = null;
+          };
+
+          const removeTrip = (index) => {
+            trips.value.splice(index, 1);
+          };
+
+          const resetRanking = () => {
+            trips.value = [...originalTrips.value];
+          };
+
+          const submitRanking = async () => {
+            saving.value = true;
+            saveMessage.value = '';
+            try {
+              const response = await fetch(`${apiBase}/api/rankings`, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ ranking: trips.value })
+              });
+              if (!response.ok) {
+                throw new Error('Failed to save ranking');
+              }
+              const result = await response.json();
+              aggregate.value = result;
+              savedRanking.value = [...trips.value];
+              hasSaved.value = true;
+              saveMessage.value = 'Ranking saved!';
+            } catch (error) {
+              console.error(error);
+              saveMessage.value = 'Unable to save ranking. Please try again.';
+            } finally {
+              saving.value = false;
+            }
+          };
+
+          onMounted(async () => {
+            await fetchTrips();
+          });
+
+          const comparisonRows = computed(() => {
+            if (!hasSaved.value || !savedRanking.value.length) {
+              return [];
+            }
+            const groupPositions = new Map();
+            aggregate.value.aggregate.forEach((item, index) => {
+              groupPositions.set(item.trip, index + 1);
+            });
+            return savedRanking.value.map((trip, index) => {
+              const yourRank = index + 1;
+              const groupRank = groupPositions.get(trip);
+              const difference = typeof groupRank === 'number' ? groupRank - yourRank : null;
+              return {
+                trip,
+                yourRank,
+                groupRankLabel: typeof groupRank === 'number' ? groupRank : 'Not ranked',
+                differenceLabel:
+                  difference === null
+                    ? '—'
+                    : difference === 0
+                      ? 'Same'
+                      : difference > 0
+                        ? `You rank it ${Math.abs(difference)} place${Math.abs(difference) === 1 ? '' : 's'} higher`
+                        : `Group ranks it ${Math.abs(difference)} place${Math.abs(difference) === 1 ? '' : 's'} higher`
+              };
+            });
+          });
+
+          return {
+            trips,
+            loading,
+            aggregate,
+            aggregateLoading,
+            saveMessage,
+            saving,
+            hasSaved,
+            onDragStart,
+            onDragEnter,
+            onDragOver,
+            onDrop,
+            removeTrip,
+            submitRanking,
+            resetRanking,
+            loadAggregate,
+            backgroundStyles,
+            comparisonRows
+          };
+        }
+      }).mount('#app');
+    </script>
+  </body>
+</html>
